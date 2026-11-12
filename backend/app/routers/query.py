@@ -58,6 +58,21 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message=message, entry=entry)
 
 
+@router.post("/{entry_id}/execute")
+def execute_entry(entry_id: int, payload: EntryPayload | None = None) -> dict[str, Any]:
+    """执行交互查询并接入 SQLite 共享缓存。
+
+    多进程对同一目标查询共享缓存事实：命中时返回 ``cache.status=hit`` 并带回完整身份与
+    绝对过期时点；未命中由唯一写入者填充；缓存落库失败时 ``cache.status=bypassed``，
+    查询结果仍正常返回。
+    """
+    params = dict(payload.values) if payload and payload.values else {}
+    result, error = service.execute_entry(entry_id, params)
+    if result is None:
+        raise HTTPException(status_code=404, detail=error)
+    return result
+
+
 @router.get("/export")
 def export_entries() -> dict[str, Any]:
     """导出交互查询清单：返回当前过滤条件下的全量数据。"""

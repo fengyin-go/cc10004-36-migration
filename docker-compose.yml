@@ -5,9 +5,18 @@ services:
       - "8000:8000"
     environment:
       - APP_ENV=local
+      # 共享查询缓存的 SQLite 位置；指向挂载卷后，容器重启仍可读取同一份缓存事实
+      - QUERY_CACHE_DB=/data/query_cache.sqlite3
+      - QUERY_CACHE_LEASE_MS=30000
+      - QUERY_CACHE_WAIT_MS=1500
+    volumes:
+      - query_cache_data:/data
   frontend:
     build: ./frontend
     ports:
       - "5173:5173"
     depends_on:
       - backend
+
+volumes:
+  query_cache_data:

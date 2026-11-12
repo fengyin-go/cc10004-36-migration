@@ -85,3 +85,6 @@ desktop.ini
 *.db
 *.pid
 *.seed
+
+# 共享查询缓存的本地默认目录（容器内走挂载卷 /data）
+backend/data/

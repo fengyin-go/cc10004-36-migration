@@ -75,5 +75,50 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 查询缓存的 SQLite 共享后端
+
+查询缓存不再放在各进程独有的内存里，而是落到所有 FastAPI 进程共享的一个 SQLite 文件
+（`backend/app/query_cache.py`），多进程对同一目标查询使用同一份缓存事实。
+
+- 位置可配置：环境变量 `QUERY_CACHE_DB` 指定 SQLite 文件路径，缺省为
+  `backend/data/query_cache.sqlite3`；`docker-compose.yml` 把它指到挂载卷 `/data`，
+  本地与容器重启后都能继续读取。
+- 每条缓存读写都携带完整查询身份（语句编号、表达式、目标数据集、入参、来源进程的指纹）
+  与绝对过期时点 `expires_at_epoch_ms`；过期时点在取得填充租约时固化，进程重启不会
+  重新计算，因此不会延长生存期。
+- 同键并发填充只有一个有效写入者：通过唯一键 + 租约 + 单调递增的 `fence_token` 实现。
+  租用者退出后租约到期，其它进程可接管并推进 fence，晚到的旧写入（旧 fence）会被拒绝，
+  无法覆盖新结果。
+- 损坏条目（结果负载无法解析等）会被隔离为 `quarantined` 状态并允许同键重新计算，
+  不影响其它条目；`cache_events` 表记录租约、接管、隔离、拒绝等事件。
+- 落库失败（数据库不可写等）不影响查询：接口返回 `cache.status=bypassed` 明确说明已
+  绕过缓存，查询结果照常返回。
+- 缓存策略迁移保留原策略编号；无法解析的过期秒数（如旧样例里的占位文本）标记为
+  「待确认」（`ttl_unknown=1`），这类策略不会产生真实缓存命中，旧样例内容也不会被
+  当成缓存事实。
+
+相关环境变量（见 `.env.example`）：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `QUERY_CACHE_DB` | `backend/data/query_cache.sqlite3` | 共享缓存 SQLite 文件路径 |
+| `QUERY_CACHE_LEASE_MS` | `30000` | 填充租约时长（毫秒），到期后其它进程可接管 |
+| `QUERY_CACHE_WAIT_MS` | `1500` | 同键已有租约时等待共享结果的最长时间 |
+
+新增/保留的接口：
+
+- `POST /api/query/{id}/execute`：执行交互查询并接入共享缓存，返回体含 `result` 与
+  `cache`（`hit` / `miss` / `bypassed`，及身份、fence、绝对过期时点）。
+- `GET /api/cache/entries`、`GET /api/cache/stats`：观察共享缓存条目与统计。
+- `DELETE /api/cache/entries/{cache_key}`：清理单个缓存键，下次查询重新计算。
+- 原有策略接口（列表、明细、登记、动作、导出）路径与出入参保持不变。
+
+测试（含真实多进程的单写入者、接管、fence 拒绝、损坏隔离验证）：
+
+```bash
+make test
+# 或 cd backend && .venv/bin/python -m unittest app.tests.test_query_cache -v
+```
+
 领域：数据工程
 子方向：数据分析与数据应用
